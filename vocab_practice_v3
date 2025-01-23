@@ -1,0 +1,298 @@
+'''
+改进了文件读取逻辑，使用readlines()确保读取所有行
+增加了更严格的格式验证，包括空行检查和字段完整性检查
+添加了回车键绑定，现在可以按回车提交答案
+增加了行号提示，方便定位格式错误
+历史记录显示错误次数
+错误提示显示1秒后自动消失
+'''
+import tkinter as tk
+from tkinter import ttk, filedialog, font, messagebox
+import random
+import json
+import os
+
+class VocabularyPractice:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("词汇练习")
+        self.root.geometry("600x500")
+        self.root.configure(bg="#f0f0f0")
+        
+        # 初始化变量
+        self.vocab_list = []
+        self.correct_count = 0
+        self.answered_words = []  # 存储格式：[word, error_count]
+        self.review_mode = False
+        self.current_word = None
+        self.remaining_words = []
+        self.history_file = "vocab_history.json"
+        
+        # 创建界面元素
+        self.create_widgets()
+        
+    def create_widgets(self):
+        # 自定义字体
+        title_font = font.Font(family="Arial", size=18, weight="bold")
+        label_font = font.Font(family="Arial", size=14)
+        button_font = font.Font(family="Arial", size=12)
+        
+        # 主框架
+        main_frame = ttk.Frame(self.root, padding="20")
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # 顶部控制面板
+        control_frame = ttk.Frame(main_frame)
+        control_frame.pack(fill=tk.X, pady=10)
+        
+        self.file_button = ttk.Button(control_frame, text="选择词汇文件", command=self.load_file)
+        self.file_button.pack(side=tk.LEFT, padx=5)
+        
+        self.review_button = ttk.Button(control_frame, text="复习模式", command=self.toggle_review_mode)
+        self.review_button.pack(side=tk.LEFT, padx=5)
+        
+        self.export_button = ttk.Button(control_frame, text="导出历史", command=self.export_history)
+        self.export_button.pack(side=tk.LEFT, padx=5)
+        
+        # 练习区域
+        practice_frame = ttk.LabelFrame(main_frame, text="练习", padding="20")
+        practice_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.chinese_label = ttk.Label(practice_frame, text="请先选择词汇文件", font=label_font)
+        self.chinese_label.pack(pady=20)
+        
+        self.english_entry = ttk.Entry(practice_frame, font=label_font)
+        self.english_entry.pack(pady=10)
+        
+        # 结果提示
+        self.result_label = ttk.Label(practice_frame, text="", font=label_font)
+        self.result_label.pack(pady=5)
+        
+        # 按钮区域
+        button_frame = ttk.Frame(practice_frame)
+        button_frame.pack(pady=10)
+        
+        self.submit_button = ttk.Button(button_frame, text="提交", command=self.check_answer, state=tk.DISABLED)
+        self.submit_button.pack(side=tk.LEFT, padx=5)
+        
+        self.skip_button = ttk.Button(button_frame, text="跳过", command=self.next_question, state=tk.DISABLED)
+        self.skip_button.pack(side=tk.LEFT, padx=5)
+        
+        # 历史记录区域
+        history_frame = ttk.LabelFrame(main_frame, text="历史记录", padding="10")
+        history_frame.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        self.history_text = tk.Text(history_frame, height=5, wrap=tk.WORD)
+        self.history_text.pack(fill=tk.BOTH, expand=True)
+        
+        # 状态栏
+        status_frame = ttk.Frame(main_frame)
+        status_frame.pack(fill=tk.X, pady=10)
+        
+        self.stats_label = ttk.Label(status_frame, text="正确率：0%")
+        self.stats_label.pack(side=tk.LEFT)
+        
+        self.progress_label = ttk.Label(status_frame, text="进度：0/0")
+        self.progress_label.pack(side=tk.RIGHT)
+        
+    def load_file(self):
+        file_path = filedialog.askopenfilename(filetypes=[("Text files", "*.txt")])
+        if file_path:
+            try:
+                self.vocab_list = []
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    lines = f.readlines()
+                    if not lines:
+                        self.show_error("文件为空")
+                        return
+                        
+                    for i, line in enumerate(lines, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                            
+                        # 使用正则表达式分割，允许任意数量的空格或制表符
+                        import re
+                        parts = re.split(r'\s+', line.strip())
+                        if len(parts) < 3:
+                            self.show_error(f"第{i}行格式错误\n需要至少3个字段：英文 词性 中文")
+                            return
+                            
+                        # 合并多余字段（中文可能有空格）
+                        english = parts[0]
+                        pos = parts[1]
+                        chinese = ' '.join(parts[2:])
+                        parts = [english, pos, chinese]
+                        
+                        # 检查字段是否为空
+                        if not all(parts):
+                            self.show_error(f"第{i}行包含空字段")
+                            return
+                            
+                        self.vocab_list.append(parts)
+                
+                # 打乱词汇顺序
+                random.shuffle(self.vocab_list)
+                self.start_new_session()
+                
+                # 绑定回车键
+                self.english_entry.bind('<Return>', lambda event: self.check_answer())
+                
+            except Exception as e:
+                self.show_error(f"无法读取文件：{str(e)}")
+    
+    def start_new_session(self):
+        self.correct_count = 0
+        self.answered_words = []
+        self.remaining_words = self.vocab_list.copy()
+        self.clear_result()
+        self.submit_button.config(state=tk.NORMAL)
+        self.skip_button.config(state=tk.NORMAL)
+        self.update_question()
+        self.update_stats()
+        self.update_history()
+        self.english_entry.focus_set()
+    
+    def toggle_review_mode(self):
+        if not self.vocab_list:
+            self.show_error("请先选择词汇文件")
+            return
+            
+        self.review_mode = not self.review_mode
+        if self.review_mode:
+            if not self.answered_words:
+                self.show_error("没有可复习的词汇")
+                self.review_mode = False
+                return
+                
+            self.review_button.config(text="退出复习模式")
+            self.remaining_words = self.answered_words.copy()
+            random.shuffle(self.remaining_words)
+            self.start_new_session()
+        else:
+            self.review_button.config(text="复习模式")
+            self.remaining_words = self.vocab_list.copy()
+            self.start_new_session()
+    
+    def update_question(self):
+        if self.remaining_words:
+            self.current_word = random.choice(self.remaining_words)
+            self.chinese_label.config(text=self.current_word[2])
+            self.english_entry.delete(0, tk.END)
+            self.english_entry.focus_set()
+            self.update_progress()
+        else:
+            if self.vocab_list:
+                self.chinese_label.config(text="所有词汇已完成！")
+                self.english_entry.config(state=tk.DISABLED)
+                self.submit_button.config(state=tk.DISABLED)
+                self.skip_button.config(state=tk.DISABLED)
+                self.save_history()
+            else:
+                self.chinese_label.config(text="请先选择词汇文件")
+    
+    def check_answer(self):
+        user_answer = self.english_entry.get().strip().lower()
+        correct_answer = self.current_word[0].lower()
+        
+        if user_answer == correct_answer:
+            self.correct_count += 1
+            self.show_result("正确！", "green")
+            # 记录单词和错误次数（0表示正确）
+            self.answered_words.append([self.current_word, 0])
+            self.remaining_words.remove(self.current_word)
+            self.root.after(1000, self.next_question)  # 1秒后自动下一题
+        else:
+            self.show_result(f"错误，正确答案是：{correct_answer}", "red")
+            # 查找是否已经答错过这个单词
+            found = False
+            for word in self.answered_words:
+                if word[0] == self.current_word:
+                    word[1] += 1  # 增加错误次数
+                    found = True
+                    break
+            if not found:
+                # 第一次答错，记录错误次数为1
+                self.answered_words.append([self.current_word, 1])
+            self.english_entry.delete(0, tk.END)
+            self.english_entry.focus_set()
+            self.root.after(1000, self.clear_result)  # 1秒后清除错误提示
+    
+    def next_question(self):
+        self.clear_result()
+        self.update_question()
+        self.update_stats()
+        self.update_history()
+    
+    def update_stats(self):
+        total = len(self.vocab_list)
+        completed = total - len(self.remaining_words)
+        accuracy = round(self.correct_count / completed * 100, 1) if completed > 0 else 0
+        self.stats_label.config(text=f"正确率：{accuracy}%")
+    
+    def update_progress(self):
+        total = len(self.vocab_list)
+        completed = total - len(self.remaining_words)
+        self.progress_label.config(text=f"进度：{completed}/{total}")
+    
+    def update_history(self):
+        self.history_text.delete(1.0, tk.END)
+        if self.answered_words:
+            for word, error_count in self.answered_words:
+                self.history_text.insert(tk.END, f"{word[0]} - {word[2]} (错误次数：{error_count})\n")
+        else:
+            self.history_text.insert(tk.END, "暂无历史记录\n")
+    
+    def export_history(self):
+        if not self.answered_words:
+            self.show_error("没有可导出的历史记录")
+            return
+        
+        file_path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt")]
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    for word in self.answered_words:
+                        f.write(f"{word[0]}\t{word[1]}\t{word[2]}\n")
+                messagebox.showinfo("成功", "历史记录已成功导出")
+            except Exception as e:
+                self.show_error(f"导出失败：{str(e)}")
+    
+    def save_history(self):
+        if not self.answered_words:
+            return
+        
+        history = {
+            'timestamp': self.get_timestamp(),
+            'total': len(self.answered_words),
+            'correct': self.correct_count,
+            'words': self.answered_words
+        }
+        
+        try:
+            with open(self.history_file, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(history, ensure_ascii=False) + '\n')
+        except:
+            pass
+    
+    def get_timestamp(self):
+        from datetime import datetime
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def show_result(self, text, color):
+        self.result_label.config(text=text, foreground=color)
+    
+    def clear_result(self):
+        self.result_label.config(text="", foreground="black")
+    
+    def show_error(self, message):
+        messagebox.showerror("错误", message)
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = VocabularyPractice(root)
+    root.mainloop()
